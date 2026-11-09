@@ -41,7 +41,7 @@ Las credenciales **vencen con la sesión del lab (unas 4 h)**: si un comando dev
 | Variable / parámetro | Obligatoria | Descripción | Ejemplo |
 | :--- | :--- | :--- | :--- |
 | `JWT_SECRET` (env) | **Sí** | Secreto para firmar JWT (≥ 16 caracteres). Sin él, el deploy falla a propósito | `openssl rand -hex 32` |
-| `userCode` (`--param`) | Sí | Prefijo de todos los recursos. Usar **minúsculas** (lo exige el nombre del bucket) | `u202112345` |
+| `USER_CODE` (env) | Sí | Prefijo de todos los recursos. Usar **minúsculas** (lo exige el nombre del bucket) y siempre el mismo valor | `u202112345` |
 | `--stage` | No | Entorno | `dev` |
 | `--region` | No | Región | `us-east-1` |
 | `DEMO_USERS_ENABLED` (env) | No | `true` habilita `admin/admin123`, `dispatcher/disp123` y `tech1/tech123` en los 3 tenants aunque la tabla de usuarios esté vacía. Usa `false` fuera de la demo | `true` |
@@ -53,8 +53,8 @@ Guarda el `JWT_SECRET`: si lo cambias en un redeploy, los tokens emitidos dejan 
 ```bash
 cd back
 export JWT_SECRET="$(openssl rand -hex 32)"     # guárdalo
-export USER_CODE="u202112345"
-serverless deploy --stage dev --region us-east-1 --param="userCode=${USER_CODE}"
+export USER_CODE="u202112345"                  # PowerShell: $env:USER_CODE = "u202112345"
+serverless deploy --stage dev --region us-east-1
 ```
 
 Se crea el stack `openfsm-<userCode>-dev` con:
@@ -162,7 +162,7 @@ Para la demo con 2 tenants, abre dos navegadores (o uno normal y uno en incógni
 ```bash
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 aws s3 rm "s3://openfsm-${USER_CODE}-dev-evidence-${ACCOUNT}" --recursive   # el bucket debe estar vacío
-cd back && serverless remove --stage dev --region us-east-1 --param="userCode=${USER_CODE}"
+cd back && serverless remove --stage dev --region us-east-1   # con USER_CODE y JWT_SECRET exportados
 ```
 
 Después elimina la app de Amplify desde la consola.

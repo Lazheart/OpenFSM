@@ -54,8 +54,8 @@ OpenFSM/
 
 ```bash
 # Backend
-cd back && export JWT_SECRET="$(openssl rand -hex 32)"
-serverless deploy --stage dev --param="userCode=u202112345"
+cd back && export JWT_SECRET="$(openssl rand -hex 32)" && export USER_CODE=u202112345
+serverless deploy --stage dev --region us-east-1
 
 # Datos (7 tablas × 30,000 registros)
 cd ../ingest && pip install -r requirements.txt

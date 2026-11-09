@@ -1,4 +1,4 @@
-service: openfsm-${self:custom.userCode}
+service: openfsm-${env:USER_CODE, 'u202112345'}
 
 frameworkVersion: '>=3.0.0 <5.0.0'
 
@@ -6,13 +6,15 @@ frameworkVersion: '>=3.0.0 <5.0.0'
 # OpenFSM - backend serverless multi-tenant y orientado a eventos
 # Compatible con AWS Academy Learner Lab: todas las Lambdas usan LabRole y no se
 # crea ningún rol IAM. Despliegue:
-#   export JWT_SECRET=$(openssl rand -hex 32)
-#   serverless deploy --stage dev --param="userCode=u202112345"
+#   export JWT_SECRET=$(openssl rand -hex 32)     (PowerShell: $env:JWT_SECRET = "...")
+#   export USER_CODE=u202112345                   (PowerShell: $env:USER_CODE = "u202112345")
+#   serverless deploy --stage dev --region us-east-1
 # ============================================================================
 
 custom:
-  # Acepta --param="userCode=..." (v3/v4), --userCode o la variable USER_CODE
-  userCode: ${param:userCode, opt:userCode, env:USER_CODE, 'u202112345'}
+  # Variable de entorno USER_CODE (minúsculas). En Serverless v3 el nombre del servicio
+  # se resuelve antes que --param, por eso se usa una variable de entorno.
+  userCode: ${env:USER_CODE, 'u202112345'}
   prefix: openfsm-${self:custom.userCode}-${sls:stage}
   # Los nombres de bucket son globales: se agrega el accountId para evitar choques entre alumnos
   evidenceBucket: ${self:custom.prefix}-evidence-${aws:accountId}
