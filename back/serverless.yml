@@ -2,8 +2,25 @@ service: openfsm-${self:custom.userCode}
 
 frameworkVersion: '>=3.0.0 <5.0.0'
 
+# ============================================================================
+# OpenFSM - backend serverless multi-tenant y orientado a eventos
+# Compatible con AWS Academy Learner Lab: todas las Lambdas usan LabRole y no se
+# crea ningún rol IAM. Despliegue:
+#   export JWT_SECRET=$(openssl rand -hex 32)
+#   serverless deploy --stage dev --param="userCode=u202112345"
+# ============================================================================
+
 custom:
-  userCode: ${opt:userCode, env:USER_CODE, 'u202112345'}
+  # Acepta --param="userCode=..." (v3/v4), --userCode o la variable USER_CODE
+  userCode: ${param:userCode, opt:userCode, env:USER_CODE, 'u202112345'}
+  prefix: openfsm-${self:custom.userCode}-${sls:stage}
+  # Los nombres de bucket son globales: se agrega el accountId para evitar choques entre alumnos
+  evidenceBucket: ${self:custom.prefix}-evidence-${aws:accountId}
+  authorizer:
+    name: tokenAuthorizer
+    resultTtlInSeconds: 300
+    identitySource: method.request.header.Authorization
+    type: token
 
 provider:
   name: aws
@@ -12,508 +29,419 @@ provider:
   region: ${opt:region, 'us-east-1'}
   memorySize: 256
   timeout: 29
+  logRetentionInDays: 14
   iam:
     role: arn:aws:iam::${aws:accountId}:role/LabRole
   environment:
-    STAGE: ${self:provider.stage}
+    STAGE: ${sls:stage}
     USER_CODE: ${self:custom.userCode}
-    JWT_SECRET: ${env:JWT_SECRET, 'openfsm-jwt-secret-academic-lab-2026'}
-    CUSTOMERS_TABLE: openfsm-${self:custom.userCode}-${self:provider.stage}-customers
-    TECHNICIANS_TABLE: openfsm-${self:custom.userCode}-${self:provider.stage}-technicians
-    WORKORDERS_TABLE: openfsm-${self:custom.userCode}-${self:provider.stage}-workorders
-    VISITS_TABLE: openfsm-${self:custom.userCode}-${self:provider.stage}-visits
-    INVENTORY_TABLE: openfsm-${self:custom.userCode}-${self:provider.stage}-inventory
-    USERS_TABLE: openfsm-${self:custom.userCode}-${self:provider.stage}-users
+    # Obligatorio y sin valor por defecto: si no existe, el deploy falla (fail-closed)
+    JWT_SECRET: ${env:JWT_SECRET}
+    DEMO_USERS_ENABLED: ${env:DEMO_USERS_ENABLED, 'true'}
+    VALID_TENANTS: tenant-alpha,tenant-beta,tenant-gamma
+    CUSTOMERS_TABLE: ${self:custom.prefix}-customers
+    TECHNICIANS_TABLE: ${self:custom.prefix}-technicians
+    WORKORDERS_TABLE: ${self:custom.prefix}-workorders
+    VISITS_TABLE: ${self:custom.prefix}-visits
+    INVENTORY_TABLE: ${self:custom.prefix}-inventory
+    NOTIFICATIONS_TABLE: ${self:custom.prefix}-notifications
+    USERS_TABLE: ${self:custom.prefix}-users
     EVENTS_TOPIC_ARN: !Ref FSMEventsTopic
-    EVIDENCE_BUCKET: openfsm-${self:custom.userCode}-${self:provider.stage}-evidence
+    EVIDENCE_BUCKET: ${self:custom.evidenceBucket}
+  # Bucket de evidencias: lo crea Serverless junto con su notificación S3 -> Lambda
+  s3:
+    evidenceBucket:
+      name: ${self:custom.evidenceBucket}
+      corsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [PUT, GET, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+      publicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      bucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
 
 package:
   patterns:
     - '!node_modules/**'
     - '!.venv/**'
     - '!tests/**'
-    - '!__pycache__/**'
+    - '!**/__pycache__/**'
     - '!*.md'
-    - '!**/__init__.py'
+    - '!.pytest_cache/**'
 
 functions:
   # ==========================================
-  # CUSTOM AUTHORIZER
+  # AUTH
   # ==========================================
   tokenAuthorizer:
     handler: auth/authorizer.handler
 
-  # ==========================================
-  # AUTH SERVICE
-  # ==========================================
   authLogin:
     handler: auth/handler.login
     events:
-      - http:
-          path: /auth/login
-          method: post
-          cors: true
+      - http: { path: /auth/login, method: post, cors: true }
 
   authRegister:
     handler: auth/handler.register
     events:
-      - http:
-          path: /auth/register
-          method: post
-          cors: true
+      - http: { path: /auth/register, method: post, cors: true, authorizer: '${self:custom.authorizer}' }
 
   authMe:
     handler: auth/handler.me
     events:
-      - http:
-          path: /auth/me
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /auth/me, method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   # ==========================================
-  # 1. CUSTOMERS MICROSERVICE
+  # 1. CUSTOMERS
   # ==========================================
   customersList:
     handler: customers/handler.list_customers
     events:
-      - http:
-          path: /customers
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /customers, method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   customersCreate:
     handler: customers/handler.create_customer
     events:
-      - http:
-          path: /customers
-          method: post
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /customers, method: post, cors: true, authorizer: '${self:custom.authorizer}' }
 
   customersGet:
     handler: customers/handler.get_customer_by_id
     events:
-      - http:
-          path: /customers/{id}
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/customers/{id}', method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   customersDelete:
     handler: customers/handler.delete_customer_by_id
     events:
-      - http:
-          path: /customers/{id}
-          method: delete
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/customers/{id}', method: delete, cors: true, authorizer: '${self:custom.authorizer}' }
 
   # ==========================================
-  # 2. TECHNICIANS MICROSERVICE
+  # 2. TECHNICIANS
   # ==========================================
   techniciansList:
     handler: technicians/handler.list_technicians
     events:
-      - http:
-          path: /technicians
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /technicians, method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   techniciansCreate:
     handler: technicians/handler.create_technician
     events:
-      - http:
-          path: /technicians
-          method: post
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /technicians, method: post, cors: true, authorizer: '${self:custom.authorizer}' }
 
   techniciansGet:
     handler: technicians/handler.get_technician_by_id
     events:
-      - http:
-          path: /technicians/{id}
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/technicians/{id}', method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   techniciansUpdateStatus:
     handler: technicians/handler.update_technician_status
     events:
-      - http:
-          path: /technicians/{id}/status
-          method: put
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/technicians/{id}/status', method: put, cors: true, authorizer: '${self:custom.authorizer}' }
 
   # ==========================================
-  # 3. WORK ORDERS MICROSERVICE (SNS EMITTER)
+  # 3. WORK ORDERS (productor + consumidor de eventos)
   # ==========================================
   workordersList:
     handler: workorders/handler.list_workorders
     events:
-      - http:
-          path: /workorders
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /workorders, method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   workordersCreate:
     handler: workorders/handler.create_workorder
     events:
-      - http:
-          path: /workorders
-          method: post
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /workorders, method: post, cors: true, authorizer: '${self:custom.authorizer}' }
 
   workordersGet:
     handler: workorders/handler.get_workorder_by_id
     events:
-      - http:
-          path: /workorders/{id}
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/workorders/{id}', method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   workordersUpdateStatus:
     handler: workorders/handler.update_workorder_status
     events:
-      - http:
-          path: /workorders/{id}/status
-          method: put
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/workorders/{id}/status', method: put, cors: true, authorizer: '${self:custom.authorizer}' }
+
+  workordersWorker:
+    handler: workorders/worker.process_sqs_event
+    timeout: 20
+    events:
+      - sqs:
+          arn: !GetAtt FSMWorkOrdersQueue.Arn
+          batchSize: 5
+          functionResponseType: ReportBatchItemFailures
 
   # ==========================================
-  # 4. VISITS MICROSERVICE (S3 & SQS WORKER)
+  # 4. VISITS (S3 + SQS)
   # ==========================================
   visitsList:
     handler: visits/handler.list_visits
     events:
-      - http:
-          path: /visits
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /visits, method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   visitsCreate:
     handler: visits/handler.create_visit
     events:
-      - http:
-          path: /visits
-          method: post
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /visits, method: post, cors: true, authorizer: '${self:custom.authorizer}' }
 
   visitsGet:
     handler: visits/handler.get_visit_by_id
     events:
-      - http:
-          path: /visits/{id}
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/visits/{id}', method: get, cors: true, authorizer: '${self:custom.authorizer}' }
+
+  visitsUpdateStatus:
+    handler: visits/handler.update_visit_status
+    events:
+      - http: { path: '/visits/{id}/status', method: put, cors: true, authorizer: '${self:custom.authorizer}' }
 
   visitsComplete:
     handler: visits/handler.complete_visit
     events:
-      - http:
-          path: /visits/{id}/complete
-          method: put
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/visits/{id}/complete', method: put, cors: true, authorizer: '${self:custom.authorizer}' }
 
   visitsEvidenceUrl:
     handler: visits/handler.get_evidence_upload_url
     events:
-      - http:
-          path: /visits/evidence-url
-          method: post
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /visits/evidence-url, method: post, cors: true, authorizer: '${self:custom.authorizer}' }
 
-  visitsSqsWorker:
+  visitsWorker:
     handler: visits/worker.process_sqs_event
+    timeout: 20
     events:
       - sqs:
           arn: !GetAtt FSMVisitsQueue.Arn
           batchSize: 5
+          functionResponseType: ReportBatchItemFailures
+
+  evidenceProcessor:
+    handler: visits/evidence.process_s3_event
+    timeout: 20
+    events:
+      - s3:
+          bucket: evidenceBucket
+          event: s3:ObjectCreated:*
 
   # ==========================================
-  # 5. INVENTORY MICROSERVICE
+  # 5. INVENTORY
   # ==========================================
   inventoryList:
     handler: inventory/handler.list_inventory
     events:
-      - http:
-          path: /inventory
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /inventory, method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   inventoryCreate:
     handler: inventory/handler.create_inventory_item
     events:
-      - http:
-          path: /inventory
-          method: post
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /inventory, method: post, cors: true, authorizer: '${self:custom.authorizer}' }
 
   inventoryGet:
     handler: inventory/handler.get_inventory_item_by_id
     events:
-      - http:
-          path: /inventory/{id}
-          method: get
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: '/inventory/{id}', method: get, cors: true, authorizer: '${self:custom.authorizer}' }
 
   inventoryConsume:
     handler: inventory/handler.consume_inventory_part
     events:
-      - http:
-          path: /inventory/consume
-          method: post
-          cors: true
-          authorizer:
-            name: tokenAuthorizer
-            resultTtlInSeconds: 300
-            identitySource: method.request.header.Authorization
+      - http: { path: /inventory/consume, method: post, cors: true, authorizer: '${self:custom.authorizer}' }
 
-# ==========================================
-# CLOUDFORMATION RESOURCES
-# ==========================================
+  # ==========================================
+  # 6. NOTIFICATIONS (consumidor de todos los eventos)
+  # ==========================================
+  notificationsList:
+    handler: notifications/handler.list_notifications
+    events:
+      - http: { path: /notifications, method: get, cors: true, authorizer: '${self:custom.authorizer}' }
+
+  notificationsWorker:
+    handler: notifications/handler.process_sqs_event
+    timeout: 20
+    events:
+      - sqs:
+          arn: !GetAtt FSMNotificationsQueue.Arn
+          batchSize: 10
+          functionResponseType: ReportBatchItemFailures
+
 resources:
   Resources:
     # ----------------------------------------
-    # DYNAMODB TABLES (1 per microservice + users)
+    # DYNAMODB: una tabla por microservicio, PK = tenant_id (aislamiento por tenant)
     # ----------------------------------------
     CustomersTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: openfsm-${self:custom.userCode}-${self:provider.stage}-customers
+        TableName: ${self:custom.prefix}-customers
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: tenant_id
-            AttributeType: S
-          - AttributeName: id
-            AttributeType: S
+          - { AttributeName: tenant_id, AttributeType: S }
+          - { AttributeName: id, AttributeType: S }
         KeySchema:
-          - AttributeName: tenant_id
-            KeyType: HASH
-          - AttributeName: id
-            KeyType: RANGE
+          - { AttributeName: tenant_id, KeyType: HASH }
+          - { AttributeName: id, KeyType: RANGE }
 
     TechniciansTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: openfsm-${self:custom.userCode}-${self:provider.stage}-technicians
+        TableName: ${self:custom.prefix}-technicians
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: tenant_id
-            AttributeType: S
-          - AttributeName: id
-            AttributeType: S
+          - { AttributeName: tenant_id, AttributeType: S }
+          - { AttributeName: id, AttributeType: S }
         KeySchema:
-          - AttributeName: tenant_id
-            KeyType: HASH
-          - AttributeName: id
-            KeyType: RANGE
+          - { AttributeName: tenant_id, KeyType: HASH }
+          - { AttributeName: id, KeyType: RANGE }
 
     WorkOrdersTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: openfsm-${self:custom.userCode}-${self:provider.stage}-workorders
+        TableName: ${self:custom.prefix}-workorders
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: tenant_id
-            AttributeType: S
-          - AttributeName: id
-            AttributeType: S
+          - { AttributeName: tenant_id, AttributeType: S }
+          - { AttributeName: id, AttributeType: S }
         KeySchema:
-          - AttributeName: tenant_id
-            KeyType: HASH
-          - AttributeName: id
-            KeyType: RANGE
+          - { AttributeName: tenant_id, KeyType: HASH }
+          - { AttributeName: id, KeyType: RANGE }
 
     VisitsTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: openfsm-${self:custom.userCode}-${self:provider.stage}-visits
+        TableName: ${self:custom.prefix}-visits
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: tenant_id
-            AttributeType: S
-          - AttributeName: id
-            AttributeType: S
+          - { AttributeName: tenant_id, AttributeType: S }
+          - { AttributeName: id, AttributeType: S }
         KeySchema:
-          - AttributeName: tenant_id
-            KeyType: HASH
-          - AttributeName: id
-            KeyType: RANGE
+          - { AttributeName: tenant_id, KeyType: HASH }
+          - { AttributeName: id, KeyType: RANGE }
 
     InventoryTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: openfsm-${self:custom.userCode}-${self:provider.stage}-inventory
+        TableName: ${self:custom.prefix}-inventory
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: tenant_id
-            AttributeType: S
-          - AttributeName: id
-            AttributeType: S
+          - { AttributeName: tenant_id, AttributeType: S }
+          - { AttributeName: id, AttributeType: S }
         KeySchema:
-          - AttributeName: tenant_id
-            KeyType: HASH
-          - AttributeName: id
-            KeyType: RANGE
+          - { AttributeName: tenant_id, KeyType: HASH }
+          - { AttributeName: id, KeyType: RANGE }
+
+    NotificationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.prefix}-notifications
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - { AttributeName: tenant_id, AttributeType: S }
+          - { AttributeName: id, AttributeType: S }
+        KeySchema:
+          - { AttributeName: tenant_id, KeyType: HASH }
+          - { AttributeName: id, KeyType: RANGE }
+        TimeToLiveSpecification:
+          AttributeName: expires_at
+          Enabled: true
 
     UsersTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: openfsm-${self:custom.userCode}-${self:provider.stage}-users
+        TableName: ${self:custom.prefix}-users
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: tenant_id
-            AttributeType: S
-          - AttributeName: id
-            AttributeType: S
+          - { AttributeName: tenant_id, AttributeType: S }
+          - { AttributeName: id, AttributeType: S }
         KeySchema:
-          - AttributeName: tenant_id
-            KeyType: HASH
-          - AttributeName: id
-            KeyType: RANGE
+          - { AttributeName: tenant_id, KeyType: HASH }
+          - { AttributeName: id, KeyType: RANGE }
 
     # ----------------------------------------
-    # S3 EVIDENCE BUCKET
-    # ----------------------------------------
-    FSMEvidenceBucket:
-      Type: AWS::S3::Bucket
-      Properties:
-        BucketName: openfsm-${self:custom.userCode}-${self:provider.stage}-evidence
-        CorsConfiguration:
-          CorsRules:
-            - AllowedHeaders:
-                - '*'
-              AllowedMethods:
-                - GET
-                - PUT
-                - POST
-                - HEAD
-              AllowedOrigins:
-                - '*'
-              MaxAge: 3000
-
-    # ----------------------------------------
-    # SNS TOPIC (Event Bus)
+    # SNS: bus de eventos de dominio
     # ----------------------------------------
     FSMEventsTopic:
       Type: AWS::SNS::Topic
       Properties:
-        TopicName: openfsm-${self:custom.userCode}-${self:provider.stage}-events
+        TopicName: ${self:custom.prefix}-events
 
     # ----------------------------------------
-    # SQS QUEUES (Event Queuing & DLQ)
+    # SQS: una cola (+ DLQ) por consumidor
+    # VisibilityTimeout >= 6 x timeout del worker (recomendación AWS para Lambda)
     # ----------------------------------------
     FSMVisitsDLQ:
       Type: AWS::SQS::Queue
       Properties:
-        QueueName: openfsm-${self:custom.userCode}-${self:provider.stage}-visits-dlq
+        QueueName: ${self:custom.prefix}-visits-dlq
+        MessageRetentionPeriod: 1209600
 
     FSMVisitsQueue:
       Type: AWS::SQS::Queue
       Properties:
-        QueueName: openfsm-${self:custom.userCode}-${self:provider.stage}-visits-queue
+        QueueName: ${self:custom.prefix}-visits-queue
+        VisibilityTimeout: 120
         RedrivePolicy:
           deadLetterTargetArn: !GetAtt FSMVisitsDLQ.Arn
           maxReceiveCount: 3
 
-    # SQS Queue Policy granting SNS permission to publish
-    FSMVisitsQueuePolicy:
+    FSMWorkOrdersDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.prefix}-workorders-dlq
+        MessageRetentionPeriod: 1209600
+
+    FSMWorkOrdersQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.prefix}-workorders-queue
+        VisibilityTimeout: 120
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt FSMWorkOrdersDLQ.Arn
+          maxReceiveCount: 3
+
+    FSMNotificationsDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.prefix}-notifications-dlq
+        MessageRetentionPeriod: 1209600
+
+    FSMNotificationsQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.prefix}-notifications-queue
+        VisibilityTimeout: 120
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt FSMNotificationsDLQ.Arn
+          maxReceiveCount: 3
+
+    # Solo el tópico SNS (servicio sns.amazonaws.com) puede escribir en las colas
+    FSMQueuesPolicy:
       Type: AWS::SQS::QueuePolicy
       Properties:
         Queues:
           - !Ref FSMVisitsQueue
+          - !Ref FSMWorkOrdersQueue
+          - !Ref FSMNotificationsQueue
         PolicyDocument:
           Version: '2012-10-17'
           Statement:
             - Effect: Allow
-              Principal: '*'
+              Principal:
+                Service: sns.amazonaws.com
               Action: sqs:SendMessage
-              Resource: !GetAtt FSMVisitsQueue.Arn
+              Resource:
+                - !GetAtt FSMVisitsQueue.Arn
+                - !GetAtt FSMWorkOrdersQueue.Arn
+                - !GetAtt FSMNotificationsQueue.Arn
               Condition:
                 ArnEquals:
                   aws:SourceArn: !Ref FSMEventsTopic
 
-    # SNS Subscription to SQS
+    # ----------------------------------------
+    # Suscripciones SNS -> SQS con FilterPolicy por tipo de evento
+    # ----------------------------------------
     FSMVisitsSubscription:
       Type: AWS::SNS::Subscription
       Properties:
@@ -521,4 +449,51 @@ resources:
         Endpoint: !GetAtt FSMVisitsQueue.Arn
         Protocol: sqs
         RawMessageDelivery: true
+        FilterPolicy:
+          eventType: [WorkOrderCreated]
 
+    FSMWorkOrdersSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref FSMEventsTopic
+        Endpoint: !GetAtt FSMWorkOrdersQueue.Arn
+        Protocol: sqs
+        RawMessageDelivery: true
+        FilterPolicy:
+          eventType: [VisitScheduled, VisitStatusChanged, VisitCompleted]
+
+    FSMNotificationsSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref FSMEventsTopic
+        Endpoint: !GetAtt FSMNotificationsQueue.Arn
+        Protocol: sqs
+        RawMessageDelivery: true
+
+    # ----------------------------------------
+    # CORS en respuestas de error de API Gateway (401/403 del authorizer, 5XX).
+    # Sin esto el navegador reporta "error de CORS" en vez de "sesión expirada".
+    # ----------------------------------------
+    GatewayResponseDefault4XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+        ResponseType: DEFAULT_4XX
+        RestApiId: !Ref ApiGatewayRestApi
+
+    GatewayResponseDefault5XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+        ResponseType: DEFAULT_5XX
+        RestApiId: !Ref ApiGatewayRestApi
+
+  Outputs:
+    EventsTopicArn:
+      Value: !Ref FSMEventsTopic
+    EvidenceBucketName:
+      Value: ${self:custom.evidenceBucket}

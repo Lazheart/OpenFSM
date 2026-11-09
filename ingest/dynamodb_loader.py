@@ -30,7 +30,9 @@ def load_dataset_to_dynamodb(dataset: dict, user_code: str = "u202112345", stage
         "technicians": f"openfsm-{user_code}-{stage}-technicians",
         "workorders": f"openfsm-{user_code}-{stage}-workorders",
         "visits": f"openfsm-{user_code}-{stage}-visits",
-        "inventory": f"openfsm-{user_code}-{stage}-inventory"
+        "inventory": f"openfsm-{user_code}-{stage}-inventory",
+        "notifications": f"openfsm-{user_code}-{stage}-notifications",
+        "users": f"openfsm-{user_code}-{stage}-users"
     }
 
     for service_name, items in dataset.items():

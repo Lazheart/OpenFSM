@@ -7,7 +7,6 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from generator import generate_fsm_dataset, TENANTS_CONFIG
 from json_exporter import export_to_json
-from sql_exporter import export_to_sql
 from dynamodb_loader import load_dataset_to_dynamodb
 
 
@@ -23,9 +22,9 @@ def parse_args():
     )
     parser.add_argument(
         "--output",
-        choices=["all", "json", "sql", "dynamodb"],
+        choices=["all", "json", "dynamodb"],
         default="all",
-        help="Destination for generated records. Options: all, json, sql, dynamodb. Default: all."
+        help="Destination for generated records. Options: all, json, dynamodb. Default: all."
     )
     parser.add_argument(
         "--user-code",
@@ -49,12 +48,12 @@ def parse_args():
         "--output-dir",
         type=str,
         default=os.path.join(os.path.dirname(__file__), "output"),
-        help="Output directory for generated JSON and SQL files."
+        help="Output directory for generated JSON files."
     )
     parser.add_argument(
         "--sample",
         action="store_true",
-        help="Fast test run: generates 100 records per tenant per microservice (1,500 total records)."
+        help="Fast test run: generates 100 records per tenant per table (2,100 total records)."
     )
     return parser.parse_args()
 
@@ -64,7 +63,7 @@ def main():
     records_per_tenant = 100 if args.sample else args.records_per_tenant
     tenant_count = len(TENANTS_CONFIG)
     total_per_service = records_per_tenant * tenant_count
-    total_records = total_per_service * 5
+    total_records = total_per_service * 7
 
     print("=================================================================")
     print("OpenFSM: Synthetic Data Ingestion Generator")
@@ -72,7 +71,7 @@ def main():
     print(f"Tenants configured     : {tenant_count} {[t['id'] for t in TENANTS_CONFIG]}")
     print(f"Records per tenant     : {records_per_tenant:,}")
     print(f"Records per service    : {total_per_service:,} (across {tenant_count} tenants)")
-    print(f"Total synthetic records: {total_records:,} (5 microservices)")
+    print(f"Total synthetic records: {total_records:,} (7 DynamoDB tables)")
     print(f"Deployment Stage       : {args.stage}")
     print(f"User Code Prefix       : {args.user_code}")
     print(f"Output Mode            : {args.output}")
@@ -90,13 +89,6 @@ def main():
         print("--- JSON Export ---")
         json_dir = os.path.join(args.output_dir, "json")
         export_to_json(dataset, output_dir=json_dir)
-        print()
-
-    # SQL Export
-    if args.output in ["all", "sql"]:
-        print("--- SQL Export (RDS Single Database, Multiple Schemas) ---")
-        sql_file = os.path.join(args.output_dir, "sql", "seed_rds.sql")
-        export_to_sql(dataset, output_file=sql_file)
         print()
 
     # DynamoDB Batch Load
