@@ -18,6 +18,50 @@ Orden: **1) backend con Serverless Framework → 2) ingesta de datos → 3) fron
 
 ---
 
+## Ruta rápida en Windows / PowerShell 5.1 (probada de punta a punta)
+
+PowerShell 5.1 no acepta `&&`: se usa `;`. Los `$env:...` solo duran mientras la ventana esté abierta.
+
+```powershell
+# 0) Herramientas (sin admin: pnpm por npm, porque corepack falla con EPERM en Program Files)
+npm i -g serverless@3 pnpm
+
+# 1) Repo: verificar la rama ANTES de desplegar
+git clone https://github.com/Lazheart/OpenFSM.git; cd OpenFSM; git branch --show-current
+Select-String -Path back\serverless.yml -Pattern '^service:'   # debe decir openfsm-${env:USER_CODE, ...}
+
+# 2) Credenciales del Learner Lab -> pegar en $HOME\.aws\credentials (incluye aws_session_token)
+aws configure set region us-east-1; aws sts get-caller-identity
+
+# 3) Backend. Guarda JWT_SECRET y USER_CODE fuera del repo para poder redesplegar
+cd back
+$b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+$env:JWT_SECRET = -join ($b | % { $_.ToString('x2') }); $env:USER_CODE = "micodigo"   # minúsculas, siempre el mismo
+"JWT_SECRET=$env:JWT_SECRET`nUSER_CODE=$env:USER_CODE" | Out-File "$HOME\openfsm-secrets.txt"
+serverless deploy --stage dev --region us-east-1          # copia la URL base (.../dev)
+
+# Redeploy otro día: recuperar las variables antes del deploy
+$env:JWT_SECRET = ((Get-Content "$HOME\openfsm-secrets.txt") -match '^JWT_SECRET=')[0].Split('=')[1]
+$env:USER_CODE  = ((Get-Content "$HOME\openfsm-secrets.txt") -match '^USER_CODE=')[0].Split('=')[1]
+
+# 4) Datos (~15 min para 210k registros)
+cd ..\ingest; python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt
+python main.py --records-per-tenant 10000 --output dynamodb --user-code $env:USER_CODE --stage dev --region us-east-1
+
+# 5) Frontend -> zip para Amplify "Deploy without Git"
+cd ..\front; pnpm install
+# OJO: Set-Content -Encoding ascii (Out-File escribe UTF-16 y Vite no lo lee)
+Set-Content -Path .env.production -Encoding ascii -Value "VITE_API_BASE_URL=https://XXXX.execute-api.us-east-1.amazonaws.com/dev"
+pnpm build
+# OJO: usar tar.exe, NO Compress-Archive (en PS 5.1 guarda "assets\x.js" con barra invertida
+# y Amplify devuelve 404 en /assets -> página en blanco)
+Remove-Item openfsm-front.zip -ErrorAction SilentlyContinue
+tar.exe -a -cf openfsm-front.zip -C dist (Get-ChildItem dist -Name); tar.exe -tf openfsm-front.zip
+# Amplify -> Create new app -> Deploy without Git -> arrastrar el zip (actualizar: "Deploy updates")
+```
+
+---
+
 ## 1. Credenciales de AWS Academy
 
 En el Learner Lab: **Start Lab → AWS Details → AWS CLI → Show**, y copia el bloque en `~/.aws/credentials` (perfil `default`) o expórtalo:
