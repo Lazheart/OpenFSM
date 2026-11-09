@@ -3,51 +3,31 @@ from decimal import Decimal
 
 
 class DecimalEncoder(json.JSONEncoder):
-    """Encodes Decimal objects to int or float for JSON serialization."""
+    """Serializa Decimal (DynamoDB) como int o float."""
     def default(self, obj):
         if isinstance(obj, Decimal):
             return int(obj) if obj % 1 == 0 else float(obj)
-        return super(DecimalEncoder, self).default(obj)
+        return super().default(obj)
 
 
-def build_response(status_code: int, body: dict, custom_headers: dict = None) -> dict:
-    """Builds standard API Gateway HTTP response with CORS headers."""
-    headers = {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Tenant-Id",
-        "Access-Control-Allow-Methods": "OPTIONS,GET,POST,PUT,DELETE,PATCH"
-    }
-    if custom_headers:
-        headers.update(custom_headers)
-
-    return {
-        "statusCode": status_code,
-        "headers": headers,
-        "body": json.dumps(body, cls=DecimalEncoder)
-    }
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Methods": "OPTIONS,GET,POST,PUT,DELETE",
+}
 
 
-def success_response(data: any, status_code: int = 200, message: str = "Success") -> dict:
-    """Returns standard successful response payload."""
-    payload = {
-        "success": True,
-        "message": message,
-        "data": data
-    }
-    return build_response(status_code, payload)
+def build_response(status_code: int, body: dict) -> dict:
+    headers = {"Content-Type": "application/json", **CORS_HEADERS}
+    return {"statusCode": status_code, "headers": headers, "body": json.dumps(body, cls=DecimalEncoder)}
 
 
-def error_response(message: str, status_code: int = 400, error_code: str = "BAD_REQUEST", details: any = None) -> dict:
-    """Returns standard error response payload."""
-    payload = {
-        "success": False,
-        "error": {
-            "code": error_code,
-            "message": message
-        }
-    }
+def success_response(data, status_code: int = 200, message: str = "Success") -> dict:
+    return build_response(status_code, {"success": True, "message": message, "data": data})
+
+
+def error_response(message: str, status_code: int = 400, error_code: str = "BAD_REQUEST", details=None) -> dict:
+    payload = {"success": False, "error": {"code": error_code, "message": message}}
     if details is not None:
         payload["error"]["details"] = details
     return build_response(status_code, payload)
-

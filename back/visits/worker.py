@@ -1,85 +1,59 @@
+"""
+Worker SQS de Visits.
+
+Consume (FilterPolicy): WorkOrderCreated
+Si la orden llega con técnico asignado, agenda automáticamente la primera visita
+en la siguiente hora en punto, con la duración estimada de la orden, y publica
+VisitScheduled. Las órdenes sin técnico quedan en el tablero de despacho.
+"""
 import os
 import sys
-import json
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from common.db_utils import get_table
+from common.db_utils import is_conditional_failure, put_item
+from common.event_utils import WORK_ORDER_CREATED
+from common.sqs_utils import process_batch
+from visits.handler import VISITS_TABLE, build_visit, publish_scheduled
 
-VISITS_TABLE = os.environ.get("VISITS_TABLE", "openfsm-visits")
+
+def _handle(message: dict) -> None:
+    if message.get("event_type") != WORK_ORDER_CREATED:
+        print(f"Ignoring event {message.get('event_type')}")
+        return
+    tenant_id = message.get("tenant_id")
+    workorder_id = message.get("workorder_id")
+    technician_id = message.get("assigned_technician_id")
+    if not tenant_id or not workorder_id:
+        print(f"Malformed event: {message}")
+        return
+    if not technician_id:
+        print(f"{workorder_id} has no technician; left for dispatch board")
+        return
+    start = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    hours = float(message.get("estimated_hours") or 1)
+    end = start + timedelta(hours=max(0.5, min(hours, 12)))
+
+    visit = build_visit(
+        tenant_id, workorder_id, technician_id, start.isoformat(), end.isoformat(),
+        notes=f"Auto-agendada por el evento WorkOrderCreated: {message.get('title', '')}"[:500],
+    )
+    # Id determinístico por evento: si SQS reentrega el mensaje, el put condicional
+    # falla y no se duplica la visita (idempotencia).
+    event_id = message.get("event_id")
+    if event_id:
+        visit["id"] = f"VISIT#auto-{event_id[:12]}"
+    try:
+        put_item(VISITS_TABLE, visit, only_if_new=True)
+    except Exception as exc:
+        if is_conditional_failure(exc):
+            print(f"Duplicate delivery for {workorder_id}; skipping")
+            return
+        raise
+    publish_scheduled(visit)
+    print(f"Auto-scheduled {visit['id']} for {workorder_id}")
 
 
 def process_sqs_event(event, context):
-    """
-    SQS Event Consumer Lambda:
-    Processes messages forwarded by SNS Topic -> SQS Queue.
-    When a WorkOrderCreated event is received, it automatically provisions an initial scheduled visit.
-    """
-    records = event.get("Records", [])
-    processed_count = 0
-    errors = []
-
-    print(f"Visits SQS Worker triggered with {len(records)} records")
-
-    for record in records:
-        try:
-            body_str = record.get("body", "{}")
-            body_json = json.loads(body_str)
-
-            # SNS message wrapper if delivered via SNS-SQS subscription
-            if "Message" in body_json and "Type" in body_json:
-                message_payload = json.loads(body_json["Message"])
-            else:
-                message_payload = body_json
-
-            event_type = message_payload.get("event_type")
-            tenant_id = message_payload.get("tenant_id")
-            workorder_id = message_payload.get("workorder_id")
-
-            print(f"Processing event {event_type} for tenant {tenant_id}, work order {workorder_id}")
-
-            if event_type == "WorkOrderCreated" and tenant_id and workorder_id:
-                # Auto-schedule visit for work order
-                now = datetime.now(timezone.utc).isoformat()
-                visit_id = f"VISIT#{uuid.uuid4().hex[:12]}"
-                visit_item = {
-                    "tenant_id": tenant_id,
-                    "id": visit_id,
-                    "workorder_id": workorder_id,
-                    "technician_id": message_payload.get("assigned_technician_id", ""),
-                    "scheduled_start": now,
-                    "scheduled_end": "",
-                    "actual_start": "",
-                    "actual_end": "",
-                    "status": "SCHEDULED",
-                    "notes": f"Auto-generated from EDA event WorkOrderCreated: {message_payload.get('title', '')}",
-                    "checklist": [
-                        {"item": "Initial safety check", "passed": False},
-                        {"item": "Equipment inspection", "passed": False},
-                        {"item": "Customer verification", "passed": False}
-                    ],
-                    "evidence_photos": [],
-                    "signature_key": "",
-                    "created_at": now,
-                    "updated_at": now
-                }
-
-                table = get_table(VISITS_TABLE)
-                table.put_item(Item=visit_item)
-                print(f"Successfully auto-created visit {visit_id} for work order {workorder_id}")
-                processed_count += 1
-            else:
-                print(f"Skipping event type: {event_type}")
-
-        except Exception as exc:
-            print(f"Error processing SQS record: {str(exc)}")
-            errors.append(str(exc))
-
-    return {
-        "status": "completed",
-        "processed_count": processed_count,
-        "errors_count": len(errors)
-    }
-
+    return process_batch(event, _handle)

@@ -22,3 +22,8 @@ ingest/output/
 .env
 .env.local
 
+.env.*
+!.env.example
+
+# Tests
+.pytest_cache/

@@ -1,7 +1,23 @@
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
+import hashlib
 
+
+
+def _pbkdf2(password: str, salt: str, iterations: int = 60000) -> str:
+    """Mismo formato que back/common/auth_utils.hash_password."""
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations).hex()
+    return f"pbkdf2${iterations}${salt}${digest}"
+
+
+# Contraseñas de las cuentas demo (iguales a las del README) y de los usuarios sintéticos
+DEMO_PASSWORD_HASHES = {
+    "admin": _pbkdf2("admin123", "seed-admin"),
+    "dispatcher": _pbkdf2("disp123", "seed-dispatcher"),
+    "tech1": _pbkdf2("tech123", "seed-tech1"),
+}
+SEED_USER_HASH = _pbkdf2("OpenFSM-Seed-2026", "seed-users")
 
 TENANTS_CONFIG = [
     {
@@ -115,13 +131,9 @@ COMPANIES = [
 
 def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
     """
-    Generates realistic synthetic FSM data for 3 tenants across 5 microservices:
-    - Customers: records_per_tenant * 3
-    - Technicians: records_per_tenant * 3
-    - Work Orders: records_per_tenant * 3
-    - Visits: records_per_tenant * 3
-    - Inventory: records_per_tenant * 3
-    Total records generated = records_per_tenant * 15 (e.g. 150,000 for 10k).
+    Genera datos sintéticos para 3 tenants en las 7 tablas DynamoDB
+    (customers, technicians, workorders, visits, inventory, notifications, users):
+    records_per_tenant * 3 por tabla. Con 10k -> 30,000 por microservicio, 210,000 en total.
     """
     random.seed(seed)
     dataset = {
@@ -129,14 +141,21 @@ def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
         "technicians": [],
         "workorders": [],
         "visits": [],
-        "inventory": []
+        "inventory": [],
+        "notifications": [],
+        "users": []
     }
 
-    base_date = datetime(2026, 1, 1, 8, 0, 0, tzinfo=timezone.utc)
+    # Fechas relativas al día de la ingesta: las órdenes más recientes quedan en
+    # "hoy", así el panel y el tablero de despacho muestran actividad en la demo.
+    today = datetime.now(timezone.utc).replace(hour=8, minute=0, second=0, microsecond=0)
+    base_date = today - timedelta(minutes=records_per_tenant * 8)
 
     for tenant in TENANTS_CONFIG:
         tenant_id = tenant["id"]
         industry = tenant["industry"]
+        # Prefijo distinto por tenant (antes tenant_id[:4] daba "tena" para los tres)
+        pref = tenant_id.split("-")[-1][:4]
 
         # ----------------------------------------------------
         # 1. GENERATE CUSTOMERS
@@ -149,11 +168,11 @@ def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
             comp_base = random.choice(COMPANIES)
             company_name = f"{comp_base} #{i}" if i > len(COMPANIES) else comp_base
             tax_id = f"20{random.randint(100000000, 999999999)}"
-            created_ts = (base_date + timedelta(minutes=i * 12)).isoformat()
+            created_ts = (today - timedelta(minutes=(records_per_tenant - i) * 12)).isoformat()
 
             cust = {
                 "tenant_id": tenant_id,
-                "id": f"CUST#{tenant_id[:4]}-{i:06d}",
+                "id": f"CUST#{pref}-{i:06d}",
                 "name": company_name,
                 "tax_id": tax_id,
                 "email": f"contacto.sede{i}@{tenant_id}.com",
@@ -177,13 +196,13 @@ def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
             fname = random.choice(FIRST_NAMES)
             lname = random.choice(LAST_NAMES)
             spec = random.choice(tenant["specialties"])
-            created_ts = (base_date + timedelta(minutes=i * 15)).isoformat()
+            created_ts = (today - timedelta(minutes=(records_per_tenant - i) * 15)).isoformat()
             lat = round(-12.046374 + random.uniform(-0.15, 0.15), 6)
             lon = round(-77.042793 + random.uniform(-0.15, 0.15), 6)
 
             tech = {
                 "tenant_id": tenant_id,
-                "id": f"TECH#{tenant_id[:4]}-{i:06d}",
+                "id": f"TECH#{pref}-{i:06d}",
                 "name": f"{fname} {lname}",
                 "email": f"{fname.lower()}.{lname.lower()}{i}@{tenant_id}.com",
                 "phone": f"+51 9{random.randint(10000000, 99999999)}",
@@ -209,11 +228,11 @@ def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
             base_sku, base_name, cat, cost, price = parts_catalog[(i - 1) % len(parts_catalog)]
             sku = f"{base_sku}-{i:05d}"
             part_name = f"{base_name} Model {i}"
-            created_ts = (base_date + timedelta(minutes=i * 10)).isoformat()
+            created_ts = (today - timedelta(minutes=(records_per_tenant - i) * 10)).isoformat()
 
             item = {
                 "tenant_id": tenant_id,
-                "id": f"PART#{tenant_id[:4]}-{i:06d}",
+                "id": f"PART#{pref}-{i:06d}",
                 "sku": sku,
                 "name": part_name,
                 "category": cat,
@@ -245,7 +264,7 @@ def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
 
             wo = {
                 "tenant_id": tenant_id,
-                "id": f"WO#{tenant_id[:4]}-{i:06d}",
+                "id": f"WO#{pref}-{i:06d}",
                 "customer_id": customer_ref,
                 "assigned_technician_id": technician_ref,
                 "title": f"[{industry}] {problem[:50]}",
@@ -277,11 +296,13 @@ def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
             status = random.choice(["SCHEDULED", "EN_ROUTE", "IN_PROGRESS", "COMPLETED", "COMPLETED"])
             actual_start = start_dt.isoformat() if status in ["IN_PROGRESS", "COMPLETED"] else ""
             actual_end = end_dt.isoformat() if status == "COMPLETED" else ""
-            signature = f"s3://openfsm-{tenant_id}-evidence/signatures/{wo_id}.png" if status == "COMPLETED" else ""
+            visit_id = f"VISIT#{pref}-{i:06d}"
+            evidence_prefix = f"{tenant_id}/visits/{visit_id}"
+            signature = f"{evidence_prefix}/signature.png" if status == "COMPLETED" else ""
 
             visit = {
                 "tenant_id": tenant_id,
-                "id": f"VISIT#{tenant_id[:4]}-{i:06d}",
+                "id": visit_id,
                 "workorder_id": wo_id,
                 "technician_id": tech_ref,
                 "scheduled_start": start_dt.isoformat(),
@@ -296,8 +317,8 @@ def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
                     {"item": "Customer Signoff Received", "passed": status == "COMPLETED"}
                 ],
                 "evidence_photos": [
-                    f"s3://openfsm-{tenant_id}-evidence/visits/{wo_id}/photo_before.jpg",
-                    f"s3://openfsm-{tenant_id}-evidence/visits/{wo_id}/photo_after.jpg"
+                    f"{evidence_prefix}/photo_before.jpg",
+                    f"{evidence_prefix}/photo_after.jpg"
                 ] if status == "COMPLETED" else [],
                 "signature_key": signature,
                 "created_at": start_dt.isoformat(),
@@ -306,5 +327,49 @@ def generate_fsm_dataset(records_per_tenant: int = 10000, seed: int = 42):
             tenant_visits.append(visit)
         dataset["visits"].extend(tenant_visits)
 
-    return dataset
+        # ----------------------------------------------------
+        # 6. NOTIFICATIONS (microservicio Notifications)
+        # ----------------------------------------------------
+        severities = {"EMERGENCY": "CRITICAL", "HIGH": "WARNING", "NORMAL": "INFO", "LOW": "INFO"}
+        for i, wo in enumerate(tenant_workorders, start=1):
+            created = wo["created_at"]
+            dataset["notifications"].append({
+                "tenant_id": tenant_id,
+                "id": f"NOTIF#{created}#seed{pref}{i:06d}",
+                "event_type": "WorkOrderCreated",
+                "severity": severities.get(wo["priority"], "INFO"),
+                "title": f"Nueva orden {wo['id'].split('#')[-1]}",
+                "detail": wo["title"],
+                "entity_id": wo["id"],
+                "created_at": created,
+            })
 
+        # ----------------------------------------------------
+        # 7. USERS (servicio Auth). Mismo hash precalculado para los usuarios
+        #    sintéticos: calcular 10k PBKDF2 por tenant tardaría demasiado.
+        # ----------------------------------------------------
+        for username, role in (("admin", "ADMIN"), ("dispatcher", "DISPATCHER"), ("tech1", "TECHNICIAN")):
+            dataset["users"].append({
+                "tenant_id": tenant_id,
+                "id": f"USER#{username}",
+                "username": username,
+                "full_name": f"Demo {role.title()} {tenant['name']}",
+                "role": role,
+                "password_hash": DEMO_PASSWORD_HASHES[username],
+                "created_at": today.isoformat(),
+            })
+        for i in range(1, records_per_tenant - 2):
+            fname = random.choice(FIRST_NAMES)
+            lname = random.choice(LAST_NAMES)
+            username = f"{fname.lower()}.{lname.lower()}{i}"
+            dataset["users"].append({
+                "tenant_id": tenant_id,
+                "id": f"USER#{username}",
+                "username": username,
+                "full_name": f"{fname} {lname}",
+                "role": "TECHNICIAN" if i % 10 else "DISPATCHER",
+                "password_hash": SEED_USER_HASH,
+                "created_at": (today - timedelta(minutes=(records_per_tenant - i) * 15)).isoformat(),
+            })
+
+    return dataset
